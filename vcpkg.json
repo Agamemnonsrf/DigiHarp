@@ -1,0 +1,7 @@
+{
+  "dependencies": [
+    "raylib"
+  ],
+  "version": "1.0",
+  "name": "digiharp"
+}
