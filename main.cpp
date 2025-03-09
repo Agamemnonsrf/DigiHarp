@@ -10,20 +10,21 @@ using std::to_string;
 using std::cout;
 using std::endl;
 
-constexpr int screenWidth = 700;
+constexpr int screenWidth = 1400;
 constexpr int screenHeight = 850;
-constexpr float MAX_CORD_SIZE = 4.0f;
+constexpr float MAX_CORD_SIZE = 6.0f;
 constexpr float MIN_CORD_SIZE = 2.0f;
 constexpr float MAX_CORD_LENGTH = 320.0f;
-constexpr float MIN_CORD_LENGTH = 200.0f;
+constexpr float MIN_CORD_LENGTH = 320.0f;
 constexpr int MAX_SOUNDS = 400;
-constexpr int CHORDS = 30;
+constexpr int CHORDS = 10;
 constexpr float MAX_PITCH = 1.0f;
 constexpr float MIN_PITCH = 0.4f;
 constexpr float SHADOW_HEIGHT = 10.0f;
 constexpr float SHADOW_THICKNESS = 0.15f;
 constexpr float SHADOW_SIZE = 20.0f;
 constexpr int PLUCK_THRESHOLD = 30;
+constexpr Vector2 bow = {25, 300};
 
 void sleep(const int ms) {
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
@@ -53,12 +54,17 @@ struct Chord {
     std::array<Vector2, 5> points;
     Animation anim;
     bool grab = false;
+    bool canBeGrabbed = true;
+    Vector2 grabPoint = {0,0};
 
     Chord(std::array<Vector2, 5> points_, const Animation &anim_) : points(points_), anim(anim_) {}
 };
 
 std::vector<Chord> chords;
 std::vector<Chord> chordShadows;
+
+Vector2 cursorPosition = {0, 0};
+std::queue<Vector2> cursorQueue;
 
 float SpringOut(int currentTime, float startValue, float changeInValue, int duration) {
     if (currentTime >= duration) return startValue + changeInValue;
@@ -73,22 +79,23 @@ float SpringOut(int currentTime, float startValue, float changeInValue, int dura
 void handleChordInteraction(Chord& chord, int index) {
     const float cordLen = chord.points[4].x - chord.points[0].x;
     const int sideThreshold = cordLen/6;
-    if (abs(GetMouseY() - chord.anim.endPosition.y) <= 10 && (GetMouseX() >= chord.points[0].x + sideThreshold && GetMouseX() <= chord.points[4].x - sideThreshold)) {
+    if (abs(GetMousePosition().y - chord.anim.endPosition.y) <= 10
+        && (GetMousePosition().x >= chord.points[0].x + sideThreshold
+            && GetMousePosition().x <= chord.points[4].x - sideThreshold)) {
         chord.grab = true;
     }
     if (chord.grab){
         chord.anim.currTime = 0.0f;
-        if (abs(GetMouseY() - chord.anim.endPosition.y) <= PLUCK_THRESHOLD) {
-            if ((GetMouseX() >= chord.points[0].x + sideThreshold && GetMouseX() <= chord.points[4].x - sideThreshold)) {
-                chord.points[2].x = GetMouseX();
-                chord.points[2].y = GetMouseY();
+        if (abs(GetMousePosition().y - chord.anim.endPosition.y) <= PLUCK_THRESHOLD) {
+            if ((GetMousePosition().x >= chord.points[0].x + sideThreshold && GetMousePosition().x <= chord.points[4].x - sideThreshold)) {
+                chord.points[2].x = GetMousePosition().x;
+                chord.points[2].y = GetMousePosition().y;
             } else {
                 chord.grab = false;
             }
         } else {
             const float pitch_rate = (MAX_PITCH - MIN_PITCH) / (CHORDS - 1);
             const float pitch = 1.0f * MIN_PITCH + (pitch_rate * (index));
-            print(pitch, "pitch");
             SetSoundPitch(soundArray[currentSound], pitch);
             PlaySound(soundArray[currentSound]);            // play the next open sound slot
             currentSound++;                                 // increment the sound slot
@@ -100,6 +107,105 @@ void handleChordInteraction(Chord& chord, int index) {
     } else {
         if (chord.anim.currTime < chord.anim.duration) {
             chord.anim.currTime += GetFrameTime() * 100.0f;  // Adjust speed
+
+            // Apply the easing function
+            const float valy = chord.anim.AnimationFunc(chord.anim.currTime, chord.anim.startPosition.y, chord.anim.endPosition.y - chord.anim.startPosition.y, chord.anim.duration);
+            chord.points[2].y = valy;
+        }
+
+        if (chord.points[2].x != chord.anim.endPosition.x) {
+            const float valx = chord.anim.AnimationFunc(chord.anim.currTime, chord.anim.startPosition.x, chord.anim.endPosition.x - chord.anim.startPosition.x, chord.anim.duration);
+            chord.points[2].x = valx;
+        }
+    }
+}
+
+void handleChordInteractionTrail(Chord& chord, int index) {
+    if (cursorQueue.size() < 2) return;
+    std::queue<Vector2> copyQueue(cursorQueue);
+    while (!copyQueue.empty()) {
+        const float cordLen = chord.points[4].x - chord.points[0].x;
+        const int sideThreshold = cordLen/6;
+        if (abs(cursorQueue.front().y - chord.anim.endPosition.y) <= 10
+            && (cursorQueue.front().x >= chord.points[0].x + sideThreshold
+                && cursorQueue.front().x <= chord.points[4].x - sideThreshold)) {
+            chord.grab = true;
+                }
+        if (chord.grab){
+            chord.anim.currTime = 0.0f;
+            if (abs(cursorQueue.front().y - chord.anim.endPosition.y) <= PLUCK_THRESHOLD) {
+                if ((cursorQueue.front().x >= chord.points[0].x + sideThreshold && cursorQueue.front().x <= chord.points[4].x - sideThreshold)) {
+                    chord.points[2].x = cursorQueue.front().x;
+                    chord.points[2].y = cursorQueue.front().y;
+                } else {
+                    chord.grab = false;
+                }
+            } else {
+                const float pitch_rate = (MAX_PITCH - MIN_PITCH) / (CHORDS - 1);
+                const float pitch = 1.0f * MIN_PITCH + (pitch_rate * (index));
+                SetSoundPitch(soundArray[currentSound], pitch);
+                PlaySound(soundArray[currentSound]);            // play the next open sound slot
+                currentSound++;                                 // increment the sound slot
+                if (currentSound >= MAX_SOUNDS)                 // if the sound slot is out of bounds, go back to 0
+                    currentSound = 0;
+                chord.grab = false;
+                chord.anim.startPosition = {chord.points[2].x, chord.points[2].y};
+            }
+        } else {
+            if (chord.anim.currTime < chord.anim.duration) {
+                chord.anim.currTime += GetFrameTime() * 1.0f;  // Adjust speed
+
+                // Apply the easing function
+                const float valy = chord.anim.AnimationFunc(chord.anim.currTime, chord.anim.startPosition.y, chord.anim.endPosition.y - chord.anim.startPosition.y, chord.anim.duration);
+                chord.points[2].y = valy;
+            }
+
+            if (chord.points[2].x != chord.anim.endPosition.x) {
+                const float valx = chord.anim.AnimationFunc(chord.anim.currTime, chord.anim.startPosition.x, chord.anim.endPosition.x - chord.anim.startPosition.x, chord.anim.duration);
+                chord.points[2].x = valx;
+            }
+        }
+        copyQueue.pop();
+    }
+}
+
+void handleChordInteractionBow(Chord& chord, int index) {
+    const float cordLen = chord.points[4].x - chord.points[0].x;
+    const int sideThreshold = cordLen/6;
+    if (chord.anim.endPosition.y >= GetMouseY() && chord.anim.endPosition.y <= GetMouseY() + bow.y
+        && (GetMouseX() >= chord.points[0].x + sideThreshold
+        && GetMouseX() + bow.x <= chord.points[4].x - sideThreshold)) {
+        if (chord.canBeGrabbed) {
+            chord.grab = true;
+            chord.canBeGrabbed = false;
+            chord.grabPoint = {bow.x/2, abs(GetMouseY() - chord.anim.endPosition.y)};
+        }
+    } else {
+        chord.canBeGrabbed = true;
+    }
+    if (chord.grab){
+        chord.anim.currTime = 0.0f;
+        if (abs(GetMouseY() + chord.grabPoint.y - chord.anim.endPosition.y) <= PLUCK_THRESHOLD) {
+            if ((GetMouseX() + chord.grabPoint.x >= chord.points[0].x + sideThreshold && GetMouseX() + chord.grabPoint.x <= chord.points[4].x - sideThreshold)) {
+                chord.points[2].x = GetMouseX() + chord.grabPoint.x;
+                chord.points[2].y = GetMouseY() + chord.grabPoint.y;
+            } else {
+                chord.grab = false;
+            }
+        } else {
+            const float pitch_rate = (MAX_PITCH - MIN_PITCH) / (CHORDS - 1);
+            const float pitch = 1.0f * MIN_PITCH + (pitch_rate * (index));
+            SetSoundPitch(soundArray[currentSound], pitch);
+            PlaySound(soundArray[currentSound]);            // play the next open sound slot
+            currentSound++;                                 // increment the sound slot
+            if (currentSound >= MAX_SOUNDS)                 // if the sound slot is out of bounds, go back to 0
+                currentSound = 0;
+            chord.grab = false;
+            chord.anim.startPosition = {chord.points[2].x, chord.points[2].y};
+        }
+    } else {
+        if (chord.anim.currTime < chord.anim.duration) {
+            chord.anim.currTime += GetFrameTime() * 50.0f;  // Adjust speed
 
             // Apply the easing function
             const float valy = chord.anim.AnimationFunc(chord.anim.currTime, chord.anim.startPosition.y, chord.anim.endPosition.y - chord.anim.startPosition.y, chord.anim.duration);
@@ -337,10 +443,137 @@ void InitSound(Sound sound) {
     currentSound = 0;
 }
 
+void DrawCursor() {
+    DrawCircle(cursorPosition.x, cursorPosition.y, 15.0f, RED);
+}
+
+void HandleCursor() {
+    const float mx = GetMouseX();
+    const float my = GetMouseY();
+    const Vector2 back = cursorQueue.back();
+    const float max = std::max(abs(mx-back.x), abs(my-back.y));
+    if (abs(mx-back.x) > abs(my-back.y)) {
+        for (int i = back.x; i < mx; mx < back.x ? --i : ++i) {
+            cursorQueue.push({static_cast<float>(i), static_cast<float>(std::min(back.y + (i - back.x), my))});
+        }
+    } else if (abs(mx-back.x) < abs(my-back.y)) {
+        for (int i = back.y; i < my; my < back.y ? --i : ++i) {
+            cursorQueue.push({static_cast<float>(std::min(back.x + (i - back.y), mx)), static_cast<float>(i)});
+        }
+    } else {
+        for (int i = back.x; i < max; ++i) {
+            cursorQueue.push({static_cast<float>(i), static_cast<float>(i)});
+        }
+    }
+
+    if (!cursorQueue.empty()) {
+        if (cursorPosition.x > cursorQueue.front().x) {
+            cursorPosition.x--;
+        } else {
+            cursorPosition.x++;
+        }
+
+        if (cursorPosition.y > cursorQueue.front().y) {
+            cursorPosition.y--;
+        } else {
+            cursorPosition.y++;
+        }
+        if (abs(cursorPosition.x - cursorQueue.front().x) <= 6.0f && abs(cursorPosition.y - cursorQueue.front().y) <= 6.0f) {
+            cursorQueue.pop();
+        }
+    }
+
+}
+
+void DrawBow() {
+    DrawRectangle(GetMouseX(), GetMouseY(), bow.x, bow.y, BLUE);
+}
+
+void DrawTrailCursor() {
+    // for (int i = 0; i < cursorQueue.size(); ++i) {
+    //     DrawCircle(cursorQueue.front().x, cursorQueue.front().y, 10.0f, GREEN);
+    // }
+    DrawCircle(GetMouseX(), GetMouseY(), 15.0f, RED);
+}
+
+float V2Distance(Vector2 one, Vector2 two) {
+    return sqrtf(powf(one.x - two.x, 2) + powf(one.y - two.y, 2));
+}
+
+float Lerp(float a, float b, float t) {
+    return a + t * (b - a);
+}
+
+void HandleTrailCursor() {
+    if (GetMouseX() == 0 && GetMouseY() == 0) return;
+    if (cursorQueue.size() > 2) {
+        Vector2 prev = cursorQueue.back();
+        float distance = V2Distance(prev, {(float)GetMouseX(), (float)GetMouseY()});
+        int steps = (int)distance; // One circle per pixel distance
+
+        for (int j = 0; j <= steps; j++) {
+            const float t = (float)j / steps; // Interpolation factor
+            Vector2 interpolated = {
+                Lerp(prev.x, GetMouseX(), t),
+                Lerp(prev.y, GetMouseY(), t)
+            };
+            cursorQueue.push(interpolated);
+        }
+    }
+    cursorQueue.push({(float)GetMouseX(), (float)GetMouseY()});
+    if (cursorQueue.size() > 40) {
+        for (int i = 0; i < 40; ++i) {
+            cursorQueue.pop();
+        }
+    }
+}
+
+void DrawTrail() {
+    if (cursorQueue.size() < 2) return; // Ensure at least two points exist
+
+    std::queue<Vector2> copyQueue(cursorQueue);
+    Vector2 prev = copyQueue.front(); // First point
+    copyQueue.pop();
+
+    int index = 0; // Track fade intensity
+
+    while (!copyQueue.empty()) {
+        Vector2 current = copyQueue.front();
+        copyQueue.pop();
+
+        // Draw interpolated circles between prev and current
+        float distance = V2Distance(prev, current);
+        int steps = (int)distance; // One circle per pixel distance
+
+        for (int j = 0; j <= steps; j++) {
+            const float t = (float)j / steps; // Interpolation factor
+            Vector2 interpolated = {
+                Lerp(prev.x, current.x, t),
+                Lerp(prev.y, current.y, t)
+            };
+
+            DrawCircle(interpolated.x, interpolated.y, std::min(index /4, 15), Fade(GREEN, index * 0.0001f));
+        }
+
+        prev = current; // Move to next segment
+        index++;
+    }
+}
+
+void DrawUIBackground() {
+    float color1 = 0.18f;
+    float color2 = 0.20f;
+    Image grad = GenImageGradientLinear(screenWidth/2 - 300, screenHeight, 0, ColorFromNormalized({color1,color1,color1,1.0f}), ColorFromNormalized({color2,color2,color2,1.0f}));
+    Texture2D texture1 = LoadTextureFromImage(grad);
+    DrawTexture(texture1, 0,0, WHITE);
+    // DrawRectangle(0,0,screenWidth/2 - 300, screenHeight, GRAY);
+}
+
 void runGameLoop() {
     InitAudioDevice();
     addChords(CHORDS);
     const Sound pluck = LoadSound("pluck1.wav");
+    // SetSoundVolume(pluck,0.15f);
     const Texture2D textureString = LoadTexture("stringtexturesmall2.png");
     const Texture2D textureBolt = LoadTexture("boltsmall3.png");
     Texture2D background = LoadTexture("cedar_background3.png");
@@ -353,6 +586,7 @@ void runGameLoop() {
     }
 
     background.height = screenHeight;
+    background.width = screenWidth;
     fret.height = fret.height * 0.45;
     fret.width = fret.width * 0.45;
 
@@ -370,23 +604,27 @@ void runGameLoop() {
         ColorFromNormalized({0.4f,0.4f,0.4f,1.0f}));
     const Texture2D gradTexture = LoadTextureFromImage(gradImg);
 
+    // cursorQueue.push({0,0});
 
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {
         HandleSound();
+        // HandleCursor();
+        // HandleTrailCursor();
         for (int i = 0; i < chords.size(); ++i) {
             handleChordInteraction(chords.at(i), i);
         }
+
         BeginDrawing();
         ClearBackground(BLACK);
         DrawTexture(background, 0, 0, WHITE);
+        // DrawUIBackground();
         DrawTexture(fret, screenWidth/2 - fret.width/2, screenHeight/2 - fret.height/2, WHITE);
-        // DrawTextureRoundedBeveled(fret, roundedMaskShader, fretRec, 20.0f, WHITE, 100.0f, 45.0f);
-        // DrawRoundedRectangleWithShadow({fretRec.x + 20, fretRec.y, fretRec.width, fretRec.height + 30.0f},
-        //     200, 20.0f, 0.3f, roundedMaskShader);
-        // DrawTextureRounded(fret, roundedMaskShader, fretRec, 20.0f, WHITE);
-        // DrawTexture(blurredTexture, 50, 100, Fade(BLACK, 0.5f));
         drawChords(gradTexture, textureBolt, shadow_strings, shadow_bolts);
+        DrawTrail();
+        // DrawCursor();
+        // DrawBow();
+        // DrawTrailCursor();
         EndDrawing();
     }
     UnloadTexture(textureString);
